@@ -5,58 +5,66 @@ from time import sleep
 from dataclasses import dataclass
 from cluster import constants
 
+# Middleware class handles communication between nodes in a distributed system
 class Middleware():
-    ipAdresses = {} # {uuid: (ipadress, port)} (str , int)
-    MY_UUID = ''
-    neighborUUID = None
-    neighborAlive = False
-    
-    def __init__(self,UUID, statemashine):
-        Middleware.MY_UUID = UUID 
-        self.statemashine =  statemashine
-        self._broadcastHandler = BroadcastHandler()
-        self._unicastHandler = UDPUnicastHandler()
-        self._tcpUnicastHandler = TCPUnicastHandler()
+    # Dictionary to store UUIDs and their corresponding IP addresses and ports
+    ipAdresses = {}  # {uuid: (ip_address, port)} (str, int)
+    MY_UUID = ''  # UUID of the current node
+    neighborUUID = None  # UUID of the neighboring node
+    neighborAlive = False  # Indicates if the neighboring node is alive
+
+    def __init__(self, UUID, statemashine):
+        Middleware.MY_UUID = UUID  # Assign current node's UUID
+        self.statemashine = statemashine  # State machine for managing node state
+        self._broadcastHandler = BroadcastHandler()  # Handles broadcasting messages
+        self._unicastHandler = UDPUnicastHandler()  # Handles unicast communication over UDP
+        self._tcpUnicastHandler = TCPUnicastHandler()  # Handles unicast communication over TCP
+
+        # Subscribe to TCP Unicast listeners for various message handlers
         self.subscribeTCPUnicastListener(self._updateAdresses)
         self.subscribeTCPUnicastListener(self._checkForVotingAnnouncement)
 
+        # Start a thread to send heartbeats periodically
         self.sendHB = threading.Thread(target=self._sendHeartbeats)
         self.sendHB.start()
         Middleware.neighborAlive = False
         self.subscribeUnicastListener(self._listenHeartbeats)
         self.subscribeTCPUnicastListener(self._listenLostPlayer)
 
-        self.leaderUUID = ''
+        self.leaderUUID = ''  # UUID of the leader node
 
     def findNeighbor(self, ownUUID, ipaddresses):
+        """Find the nearest neighbor UUID in a sorted list of UUIDs."""
         ordered = sorted(ipaddresses.keys())
         if ownUUID in ordered:
             ownIndex = ordered.index(ownUUID)
-
             uuidList = list(ordered)
             if uuidList[ownIndex - 1] != ownUUID:
                 return uuidList[ownIndex - 1]
-                
 
     def _sendHeartbeats(self):
+        """Periodically send heartbeat messages to the neighbor node to check its status."""
         ctr = 0
         while True:
             Middleware.neighborAlive = False
             if not Middleware.neighborUUID:
+                # Find and assign a neighbor if not already assigned
                 Middleware.neighborUUID = self.findNeighbor(Middleware.MY_UUID, Middleware.ipAdresses)
                 sleep(1)
             else:
+                # Send heartbeat ping to the neighbor
                 self.sendMessageTo(Middleware.neighborUUID, 'hbping', Middleware.MY_UUID)
                 sleep(1)
                 if ctr < 3 and not Middleware.neighborAlive:
                     ctr += 1
                 elif not Middleware.neighborAlive and ctr >= 3:
+                    # If neighbor is not alive after retries, handle its failure
                     ctr = 0
                     Middleware.ipAdresses.pop(Middleware.neighborUUID, None)
                     self.statemashine.players.removePlayer(Middleware.neighborUUID)
                     self.multicastReliable('lostplayer', Middleware.neighborUUID)
                     if Middleware.neighborUUID == self.leaderUUID:
-                        self.initiateVoting()
+                        self.initiateVoting()  # Start leader election if the leader fails
                     Middleware.neighborUUID = None
                 elif Middleware.neighborAlive:
                     ctr = 0
@@ -64,85 +72,79 @@ class Middleware():
                     Middleware.neighborUUID = None
                     ctr = 0
 
-    def _listenHeartbeats(self, messengeruuid:str, command:str, data:str):
+    def _listenHeartbeats(self, messengeruuid: str, command: str, data: str):
+        """Handle incoming heartbeat messages."""
         if command == 'hbping':
             self.sendMessageTo(messengeruuid, 'hbresponse', Middleware.MY_UUID)
         elif command == 'hbresponse':
             if messengeruuid == Middleware.neighborUUID:
                 Middleware.neighborAlive = True
 
-    def _listenLostPlayer(self, messengerUUID:str, clientsocket:socket.socket, command:str, data:str):
-        if command == 'lostplayer':           
-            Middleware.ipAdresses.pop(data, None)            
+    def _listenLostPlayer(self, messengerUUID: str, clientsocket: socket.socket, command: str, data: str):
+        """Handle notification of a lost player."""
+        if command == 'lostplayer':
+            Middleware.ipAdresses.pop(data, None)
             Middleware.neighborUUID = None
             self.statemashine.players.removePlayer(data)
-    
 
     @classmethod
     def addIpAdress(cls, uuid, addr):
+        """Add a new IP address to the dictionary."""
         cls.ipAdresses[uuid] = addr
         Middleware.neighborUUID = None
 
-    def broadcastToAll(self, command:str, data:str=''):
-        self._broadcastHandler.broadcast(command+':'+data)
-    
-    def sendMessageTo(self, uuid:str, command:str, data:str=''):
-        ipAdress = Middleware.ipAdresses[uuid]
-        self._unicastHandler.sendMessage(ipAdress, command+':'+data)
-    
-    def sendTcpMessageTo(self, uuid:str, command:str, data:str=''):
-        addr = Middleware.ipAdresses[uuid]
-        self._tcpUnicastHandler.sendMessage(addr, command+':'+data)
-    
-    def sendTcpRequestTo(self, uuid:str, command:str, data:str=''):
-        addr = Middleware.ipAdresses[uuid] 
-        return self._tcpUnicastHandler.sendTcpRequestTo(addr, command+':'+data) 
+    def broadcastToAll(self, command: str, data: str = ''):
+        """Send a broadcast message to all nodes."""
+        self._broadcastHandler.broadcast(command + ':' + data)
 
-    def multicastReliable(self, command:str, data:str=''):
-        message = command+':'+data
+    def sendMessageTo(self, uuid: str, command: str, data: str = ''):
+        """Send a unicast UDP message to a specific node."""
+        ipAdress = Middleware.ipAdresses[uuid]
+        self._unicastHandler.sendMessage(ipAdress, command + ':' + data)
+
+    def sendTcpMessageTo(self, uuid: str, command: str, data: str = ''):
+        """Send a unicast TCP message to a specific node."""
+        addr = Middleware.ipAdresses[uuid]
+        self._tcpUnicastHandler.sendMessage(addr, command + ':' + data)
+
+    def sendTcpRequestTo(self, uuid: str, command: str, data: str = ''):
+        """Send a TCP request to a specific node and wait for a response."""
+        addr = Middleware.ipAdresses[uuid]
+        return self._tcpUnicastHandler.sendTcpRequestTo(addr, command + ':' + data)
+
+    def multicastReliable(self, command: str, data: str = ''):
+        """Send a reliable multicast message to all nodes except the sender."""
+        message = command + ':' + data
         for key, addr in Middleware.ipAdresses.items():
             if key != Middleware.MY_UUID:
                 self._tcpUnicastHandler.sendMessage(addr, message)
 
-    def sendIPAdressesto(self,uuid):
-        command='updateIpAdresses'
-        s=self.leaderUUID + '$'
-        for uuid, (addr,port) in Middleware.ipAdresses.items():
-            s +=  uuid+','+str(addr)+','+str(port)+'#'
-        self.sendTcpMessageTo(uuid,command,s)
+    def sendIPAdressesto(self, uuid):
+        """Send the IP address list to a specific node."""
+        command = 'updateIpAdresses'
+        s = self.leaderUUID + '$'
+        for uuid, (addr, port) in Middleware.ipAdresses.items():
+            s += uuid + ',' + str(addr) + ',' + str(port) + '#'
+        self.sendTcpMessageTo(uuid, command, s)
 
     def subscribeBroadcastListener(self, observer_func):
-        """observer_func gets called every time there this programm recieves a broadcast message
-
-        Args:
-            observer_func ([type]): observer_function needs to have func(self, messengerUUID:str, command:str, data:str)
-        """
+        """Subscribe to receive broadcast messages."""
         self._broadcastHandler.subscribeBroadcastListener(observer_func)
+
     def subscribeUnicastListener(self, observer_func):
-        """observer_func gets called every time this programm recieves a Unicast message
-
-        Args:
-            observer_func ([type]): observer_function needs to have func(self, messengerUUID:str, command:str, data:str)
-        """
+        """Subscribe to receive unicast messages."""
         self._unicastHandler.subscribeUnicastListener(observer_func)
-    def subscribeTCPUnicastListener(self, observer_func):
-        """observer_func gets called every time this programm recieves a Unicast message
-        Args:
-            observer_func ([type]): observer_function needs to have observer_func(self, messengerUUID:str, clientsocket:socket.socket, command:str, data:str) 
-        """
-        self._tcpUnicastHandler.subscribeTCPUnicastListener(observer_func)
-    
-    def unSubscribeTCPUnicastListener(self, rmFunc):
-        self._tcpUnicastHandler.unSubscribeTCPUnicastListener(rmFunc)
-            
-    def _updateAdresses(self, messengerUUID:str, clientsocket, command:str, data:str):
-        """_updateAdresses recieves and decodes the IPAdresses List from the function 
-        sendIPAdressesto(self,uuid)
 
-        Args:
-            command (str): if this argument NOT == 'updateIpAdresses' this function returns without doing anything
-            message (str): list of uuid's and IPAdresses
-        """
+    def subscribeTCPUnicastListener(self, observer_func):
+        """Subscribe to receive TCP unicast messages."""
+        self._tcpUnicastHandler.subscribeTCPUnicastListener(observer_func)
+
+    def unSubscribeTCPUnicastListener(self, rmFunc):
+        """Unsubscribe from TCP unicast messages."""
+        self._tcpUnicastHandler.unSubscribeTCPUnicastListener(rmFunc)
+
+    def _updateAdresses(self, messengerUUID: str, clientsocket, command: str, data: str):
+        """Update the address list with received data."""
         if command == 'updateIpAdresses':
             data = data.split('$')
             self.leaderUUID = data[0]
@@ -152,7 +154,8 @@ class Middleware():
                 addrlist = addr.split(',')
                 self.addIpAdress(addrlist[0], (addrlist[1], int(addrlist[2])))
 
-    def _checkForVotingAnnouncement(self, messengerUUID:str, clientsocket:socket.socket, command:str, data:str):
+    def _checkForVotingAnnouncement(self, messengerUUID: str, clientsocket: socket.socket, command: str, data: str):
+        """Handle leader election messages."""
         if command == 'voting':
             if data == Middleware.MY_UUID:
                 print('\nI am the new Game-Master\n')
@@ -166,75 +169,27 @@ class Middleware():
                 self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
             elif data > Middleware.MY_UUID:
                 command = 'voting'
-                print('\nsend voting command with recevied UUID (' + data + ') to lowerNeighbour\n')
+                print('\nsend voting command with received UUID (' + data + ') to lowerNeighbour\n')
                 self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
         elif command == 'leaderElected':
             print('new Leader got elected\n')
             self.leaderUUID = data
             self.statemashine.switchToState("wait_for_start")
 
-
     def initiateVoting(self):
+        """Start a leader election process."""
         command = 'voting'
         data = Middleware.MY_UUID
         self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
 
     def findLowerNeighbour(self):
+        """Find the UUID of the node's lower neighbor."""
         ordered = sorted(self.ipAdresses.keys())
         ownIndex = ordered.index(Middleware.MY_UUID)
         neighbourUUID = ordered[ownIndex - 1]
-        assert Middleware.MY_UUID != neighbourUUID, 'I am my own neigbour that shouldnt happen'
-     
+        assert Middleware.MY_UUID != neighbourUUID, 'I am my own neighbor, this should not happen'
         return neighbourUUID
-       
 
-class UDPUnicastHandler():
-    _serverPort = 0 
-
-    def __init__(self):
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)                                                    
-        self._server_socket.bind(('', 0))
-        UDPUnicastHandler._serverPort = self._server_socket.getsockname()[1]
-        self.incommingUnicastHistory = []
-        self._listenerList = [] 
-        self._listen_UDP_Unicast_Thread = threading.Thread(target=self._listenUnicast)
-        self._listen_UDP_Unicast_Thread.start()
-
-    
-    def sendMessage(self, addr, message:str):
-        self._server_socket.sendto(str.encode(Middleware.MY_UUID + '_'+constants.IP_ADRESS_OF_THIS_PC + '_'+str(UDPUnicastHandler._serverPort)+'_'+message), addr)
-
-
-    def _listenUnicast(self):
-
-        while True:
-            try:
-                data, address = self._server_socket.recvfrom(constants.BUFFER_SIZE)
-                data = data.decode('utf-8')
-
-
-                if data:
-                    data=data.split('_')
-                    messengerUUID = data[0]
-                    messengerIP = data[1]
-                    messengerPort = int(data[2])    
-                                                    
-                    assert address ==  (messengerIP, messengerPort)                              
-                    message=data[3]
-                    messageSplit= message.split(':')
-                    assert len(messageSplit) == 2, "There should not be a ':' in the message"
-                    messageCommand = messageSplit[0]
-                    messageData = messageSplit[1]
-
-                    self.incommingUnicastHistory.append((message, address))
-                    for observer_func in self._listenerList:
-                        observer_func(messengerUUID, messageCommand, messageData) 
-                    data[1] = None
-            except:
-                pass
-
-    def subscribeUnicastListener(self, observer_func):
-        self._listenerList.append(observer_func)
 
 class TCPUnicastHandler():
     def __init__(self):
