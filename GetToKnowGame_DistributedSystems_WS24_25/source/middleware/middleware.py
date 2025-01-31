@@ -189,7 +189,55 @@ class Middleware():
         neighbourUUID = ordered[ownIndex - 1]
         assert Middleware.MY_UUID != neighbourUUID, 'I am my own neighbor, this should not happen'
         return neighbourUUID
+       
 
+class UDPUnicastHandler():
+    _serverPort = 0 
+
+    def __init__(self):
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)                                                    
+        self._server_socket.bind(('', 0))
+        UDPUnicastHandler._serverPort = self._server_socket.getsockname()[1]
+        self.incommingUnicastHistory = []
+        self._listenerList = [] 
+        self._listen_UDP_Unicast_Thread = threading.Thread(target=self._listenUnicast)
+        self._listen_UDP_Unicast_Thread.start()
+
+    
+    def sendMessage(self, addr, message:str):
+        self._server_socket.sendto(str.encode(Middleware.MY_UUID + '_'+constants.IP_ADRESS_OF_THIS_PC + '_'+str(UDPUnicastHandler._serverPort)+'_'+message), addr)
+
+
+    def _listenUnicast(self):
+
+        while True:
+            try:
+                data, address = self._server_socket.recvfrom(constants.BUFFER_SIZE)
+                data = data.decode('utf-8')
+
+
+                if data:
+                    data=data.split('_')
+                    messengerUUID = data[0]
+                    messengerIP = data[1]
+                    messengerPort = int(data[2])    
+                                                    
+                    assert address ==  (messengerIP, messengerPort)                              
+                    message=data[3]
+                    messageSplit= message.split(':')
+                    assert len(messageSplit) == 2, "There should not be a ':' in the message"
+                    messageCommand = messageSplit[0]
+                    messageData = messageSplit[1]
+
+                    self.incommingUnicastHistory.append((message, address))
+                    for observer_func in self._listenerList:
+                        observer_func(messengerUUID, messageCommand, messageData) 
+                    data[1] = None
+            except:
+                pass
+
+    def subscribeUnicastListener(self, observer_func):
+        self._listenerList.append(observer_func)
 
 class TCPUnicastHandler():
     def __init__(self):
@@ -271,6 +319,7 @@ class TCPUnicastHandler():
         
     def unSubscribeTCPUnicastListener(self, rmFunc):
         self._listenerList = [x for x in self._listenerList if x != rmFunc]
+        
 class BroadcastHandler():
     def __init__(self):
         self.incommingBroadcastHistory = []
