@@ -79,12 +79,12 @@ class Statemachine():
         #States specific to the leader of the Quiz Game
         tempState = self.State("wait_for_peers")
         def wait_for_peers_entry():
-            if len(self.players.playerList) < 2:
-                print("Waiting for more players - 2 players needed at minimum!")
+            if len(self.players.playerList) < 3:
+                print("Waiting for more players - 3 players needed at minimum!")
         tempState.entry = wait_for_peers_entry
 
         def wait_for_peers():
-            if len(self.players.playerList) >= 2:
+            if len(self.players.playerList) >= 3:
                 self.players.printLobby()
                 self.switchToState("start_new_round")
         tempState.run = wait_for_peers
