@@ -3,12 +3,12 @@ import os
 import uuid
 import ast
 from time import sleep
+from dataclasses import dataclass
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from middleware.middleware import Middleware
 
 from Player import PlayersList
 import json
-
 
 states = {}
 class Statemachine():
@@ -48,6 +48,7 @@ class Statemachine():
 
         def state_initializing():
             print(f"UUID: {self.middleware.MY_UUID}")
+            print(f"UUID: {self.middleware.ipAdresses}")
             self.playerName = input("Select your Player Name: ")
             gamePort = input("Select Game Room Port (Leave Empty for default value of 61424) : ")
             self.gameRoomPort = (int(gamePort) if gamePort else 61424)
@@ -151,12 +152,12 @@ class Statemachine():
                 if answer == self.question_answer[5]:
                     self.players.addPoints(self.middleware.MY_UUID, 10)
                 self.players.printLobby()
-
+                
                 self.answered = True
 
             if self.answered and self.commited_answers == (len(self.players.playerList) -2):
                 self.switchToState("wait_for_start")
-
+                
         tempState.run = play_game
 
         def play_game_exit():
@@ -166,8 +167,7 @@ class Statemachine():
             self.question_answer = ''
             self.commited_answers = 0
         tempState.exit = play_game_exit
-
-
+        
 
     def listenForPlayersList(self, messengerUUID:str, messengerSocket, command:str, playersList:str):
         if command == 'PlayerList':
@@ -202,13 +202,22 @@ class Statemachine():
 
             elif self.middleware.leaderUUID != self.middleware.MY_UUID and self.commited_answers == (len(self.players.playerList) -2) and self.answered:
                 self.switchToState("wait_for_start")
-
+                
     def runLoop(self):
         states[self.currentState].run()
-
 
 if __name__ == '__main__':
     print("Welcome to the Get to know game!")
     SM = Statemachine()
     while True:
         SM.runLoop()
+
+
+
+
+
+
+
+
+
+

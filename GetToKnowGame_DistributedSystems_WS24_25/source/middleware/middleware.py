@@ -1,9 +1,13 @@
 import uuid
 import threading
 import socket
+import logging
 from time import sleep
 from dataclasses import dataclass
 from cluster import constants
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Middleware class handles communication between nodes in a distributed system
 class Middleware():
@@ -33,14 +37,14 @@ class Middleware():
 
         self.leaderUUID = ''  # UUID of the leader node
 
-    def findNeighbor(self, ownUUID, ipaddresses):
-        """Find the nearest neighbor UUID in a sorted list of UUIDs."""
-        ordered = sorted(ipaddresses.keys())
-        if ownUUID in ordered:
-            ownIndex = ordered.index(ownUUID)
-            uuidList = list(ordered)
-            if uuidList[ownIndex - 1] != ownUUID:
-                return uuidList[ownIndex - 1]
+    # def findNeighbor(self, ownUUID, ipaddresses):
+    #     """Find the nearest neighbor UUID in a sorted list of UUIDs."""
+    #     ordered = sorted(ipaddresses.keys())
+    #     if ownUUID in ordered:
+    #         ownIndex = ordered.index(ownUUID)
+    #         uuidList = list(ordered)
+    #         if uuidList[ownIndex - 1] != ownUUID:
+    #             return uuidList[ownIndex - 1]
 
     def _sendHeartbeats(self):
         """Periodically send heartbeat messages to the neighbor node to check its status."""
@@ -58,13 +62,12 @@ class Middleware():
                 if ctr < 3 and not Middleware.neighborAlive:
                     ctr += 1
                 elif not Middleware.neighborAlive and ctr >= 3:
-                    # If neighbor is not alive after retries, handle its failure
                     ctr = 0
                     Middleware.ipAdresses.pop(Middleware.neighborUUID, None)
                     self.statemashine.players.removePlayer(Middleware.neighborUUID)
                     self.multicastReliable('lostplayer', Middleware.neighborUUID)
                     if Middleware.neighborUUID == self.leaderUUID:
-                        self.initiateVoting()  # Start leader election if the leader fails
+                        self.initiateLCRElection()  # New LCR election call
                     Middleware.neighborUUID = None
                 elif Middleware.neighborAlive:
                     ctr = 0
@@ -154,41 +157,169 @@ class Middleware():
                 addrlist = addr.split(',')
                 self.addIpAdress(addrlist[0], (addrlist[1], int(addrlist[2])))
 
+    # def form_ring(self):
+    #     """
+    #     Forms a logical ring by sorting IP addresses of all known nodes.
+    #     Returns the ordered list of IP addresses forming the ring.
+    #     """
+    #     try:
+    #         # In your current structure, ipAdresses contains {uuid: (ip, port)}
+    #         # We need to extract just the IPs for sorting
+    #         ips = [addr[0] for uuid, addr in Middleware.ipAdresses.items()]
+            
+    #         # Convert to binary for proper IP sorting
+    #         binary_ring = sorted([socket.inet_aton(ip) for ip in ips])
+            
+    #         # Convert back to string representation
+    #         ip_ring = [socket.inet_ntoa(ip) for ip in binary_ring]
+            
+    #         print(f'Ring formed: {ip_ring}')
+    #         return ip_ring
+    #     except socket.error as e:
+    #         print(f'Failed to form ring: {e}')
+    #         return []
+
+    # def getNextNodeInRing(self):
+    #     """
+    #     Determines the next node in the ring based on IP addresses.
+    #     Returns the UUID of the next node.
+    #     """
+    #     # Form the ring of IP addresses
+    #     ip_ring = self.form_ring()
+    #     if not ip_ring:
+    #         return Middleware.MY_UUID  # fallback for single-node situation
+        
+    #     # Find my IP in the ring
+    #     my_ip = Middleware.ipAdresses[Middleware.MY_UUID][0]
+        
+    #     try:
+    #         my_index = ip_ring.index(my_ip)
+    #         next_index = (my_index + 1) % len(ip_ring)
+    #         next_ip = ip_ring[next_index]
+            
+    #         # Find the UUID corresponding to this IP
+    #         for uuid, addr in Middleware.ipAdresses.items():
+    #             if addr[0] == next_ip:
+    #                 return uuid
+                    
+    #         # If we couldn't find the UUID (shouldn't happen)
+    #         return Middleware.MY_UUID
+    #     except ValueError:
+    #         # IP not found in ring (shouldn't happen)
+    #         return Middleware.MY_UUID
+
+    def form_ring(self):
+        """
+        Forms a logical ring by sorting UUIDs of all known nodes.
+        Returns the ordered list of UUIDs forming the ring.
+        """
+        try:
+            # Simply sort the UUIDs from the ipAddresses dictionary
+            uuid_ring = sorted(Middleware.ipAdresses.keys())
+            
+            print(f'Ring formed (UUIDs): {uuid_ring}')
+            return uuid_ring
+        except Exception as e:
+            print(f'Failed to form ring: {e}')
+            return []
+
+    def getNextNodeInRing(self):
+        """
+        Determines the next node in the ring based on UUIDs.
+        Returns the UUID of the next node.
+        """
+        # Form the ring of UUIDs
+        uuid_ring = self.form_ring()
+        if not uuid_ring:
+            return Middleware.MY_UUID  # fallback for single-node situation
+        
+        # Find my position in the ring
+        try:
+            my_index = uuid_ring.index(Middleware.MY_UUID)
+            next_index = (my_index + 1) % len(uuid_ring)
+            next_uuid = uuid_ring[next_index]
+            
+            # Make sure we're not returning our own UUID
+            if next_uuid == Middleware.MY_UUID and len(uuid_ring) > 1:
+                # If there are other nodes, find a different one
+                for uuid in uuid_ring:
+                    if uuid != Middleware.MY_UUID:
+                        return uuid
+                        
+            return next_uuid
+        except ValueError:
+            # UUID not found in ring (shouldn't happen)
+            print(f"Warning: Own UUID {Middleware.MY_UUID} not found in ring")
+            if uuid_ring:
+                return uuid_ring[0]  # Return first UUID if available
+            return Middleware.MY_UUID
+
+    def initiateLCRElection(self):
+        """
+        Initiates an LCR election by sending an 'lcr' message
+        containing this node's own UUID to its ring successor.
+        """
+        command = 'lcr'
+        data = Middleware.MY_UUID
+        next_uuid = self.getNextNodeInRing()
+        print(f"\nInitiating LCR election: sending {data} to {next_uuid}\n")
+        self.sendTcpMessageTo(next_uuid, command, data)
+
     def _checkForVotingAnnouncement(self, messengerUUID: str, clientsocket: socket.socket, command: str, data: str):
-        """Handle leader election messages."""
-        if command == 'voting':
+        """
+        Handles leader election messages using LCR.
+        When a message with command 'lcr' is received, the node compares
+        the election UID (data) with its own.
+        """
+        if command == 'lcr':
+            # If the incoming UID equals our own, the message has traversed the ring.
             if data == Middleware.MY_UUID:
-                print('\nI am the new Game-Master\n')
+                print('\nI am the new Game-Master (Leader elected by LCR)!\n')
                 self.leaderUUID = Middleware.MY_UUID
                 self.statemashine.switchToState("start_new_round")
                 self.multicastReliable('leaderElected', Middleware.MY_UUID)
+            # If the incoming UID is lower than our own, override it with our UID and forward.
             elif data < Middleware.MY_UUID:
-                command = 'voting'
-                data = Middleware.MY_UUID
-                print('\nsend voting command with own UUID (' + data + ') to lowerNeighbour\n')
-                self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
+                new_data = Middleware.MY_UUID
+                print(f'\nNode {Middleware.MY_UUID} replacing election UID {data} with my own, forwarding.')
+                next_uuid = self.getNextNodeInRing()
+                self.sendTcpMessageTo(next_uuid, 'lcr', new_data)
+            # If the incoming UID is higher than our own, simply forward it.
             elif data > Middleware.MY_UUID:
-                command = 'voting'
-                print('\nsend voting command with received UUID (' + data + ') to lowerNeighbour\n')
-                self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
+                print(f'\nNode {Middleware.MY_UUID} forwarding election UID {data}.')
+                next_uuid = self.getNextNodeInRing()
+                self.sendTcpMessageTo(next_uuid, 'lcr', data)
+
         elif command == 'leaderElected':
-            print('new Leader got elected\n')
+            print('New Leader got elected via LCR\n')
             self.leaderUUID = data
             self.statemashine.switchToState("wait_for_start")
+    
+    # def form_ring(self):
+    #     logger.debug('Forming ring with list of known peers')
+    #     try:
+    #         binary_ring_from_peers_list = sorted([socket.inet_aton(element) for element in self.middleware.ipAdresses])
+    #         ip_ring = [socket.inet_ntoa(ip) for ip in binary_ring_from_peers_list]
+    #         logger.info(f'Ring formed: {ip_ring}')
 
-    def initiateVoting(self):
-        """Start a leader election process."""
-        command = 'voting'
-        data = Middleware.MY_UUID
-        self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
+    #         return ip_ring
+    #     except socket.error as e:
+    #         logging.error(f'Failed to form ring: {e}')
+    #         return []
 
-    def findLowerNeighbour(self):
-        """Find the UUID of the node's lower neighbor."""
-        ordered = sorted(self.ipAdresses.keys())
-        ownIndex = ordered.index(Middleware.MY_UUID)
-        neighbourUUID = ordered[ownIndex - 1]
-        assert Middleware.MY_UUID != neighbourUUID, 'I am my own neighbor, this should not happen'
-        return neighbourUUID
+    # def initiateVoting(self):
+    #     """Start a leader election process."""
+    #     command = 'voting'
+    #     data = Middleware.MY_UUID
+    #     self.sendTcpMessageTo(self.findLowerNeighbour(), command, data)
+
+    # def findLowerNeighbour(self):
+    #     """Find the UUID of the node's lower neighbor."""
+    #     ordered = sorted(self.ipAdresses.keys())
+    #     ownIndex = ordered.index(Middleware.MY_UUID)
+    #     neighbourUUID = ordered[ownIndex - 1]
+    #     assert Middleware.MY_UUID != neighbourUUID, 'I am my own neighbor, this should not happen'
+    #     return neighbourUUID
        
 
 class UDPUnicastHandler():
